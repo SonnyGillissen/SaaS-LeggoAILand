@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>LEGO Island</title>
+<style>
+  :root { --red:#d01012; --yellow:#ffd500; color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #000; color: #fff; font: 16px/1.4 system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; }
+  header { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; justify-content: space-between;
+    padding: .4rem 1rem; background: var(--red); border-bottom: 4px solid var(--yellow); }
+  h1 { margin: 0; font-size: 1.2rem; }
+  .bar { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; }
+  label { display: flex; gap: .3rem; align-items: center; font-size: .9rem; }
+  button { cursor: pointer; border: 0; border-radius: .4rem; padding: .35rem .8rem; font: inherit; font-weight: 700;
+    background: var(--yellow); color: #1b1b1b; }
+  #stage { position: relative; flex: 1; min-height: 0; display: grid; place-items: center; background: #000; }
+  canvas { max-width: 100%; max-height: 100%; background: #000; outline: none; border: 0; }
+  #overlay { position: absolute; inset: 0; display: grid; place-content: center; gap: .75rem; text-align: center;
+    padding: 1rem; background: #000c; }
+  #overlay[hidden] { display: none; }
+  progress { width: min(24rem, 80vw); }
+  #msg { margin: 0; }
+  #msg.error { color: #ff8080; }
+  code { background: #fff2; padding: 0 .3em; border-radius: .2em; }
+</style>
+</head>
+<body>
+<header>
+  <h1>LEGO Island</h1>
+  <div class="bar">
+    <label><input type="checkbox" id="pointerLock"> Lock mouse pointer</label>
+    <button id="fullscreen" type="button">Fullscreen</button>
+  </div>
+</header>
+
+<div id="stage">
+  <canvas id="canvas" tabindex="-1" oncontextmenu="event.preventDefault()"></canvas>
+  <div id="overlay">
+    <p id="msg">Checking game files…</p>
+    <progress id="progress" hidden></progress>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const PREFS_KEY = "legoIsland.prefs.v1";
+
+function loadPrefs() {
+  try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch { return {}; }
+}
+function savePrefs(p) {
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify(p)); } catch {}
+}
+const prefs = loadPrefs();
+$("pointerLock").checked = !!prefs.pointerLock;
+$("pointerLock").addEventListener("change", () => {
+  prefs.pointerLock = $("pointerLock").checked;
+  savePrefs(prefs);
+});
+
+function show(text, isError, hideOverlay) {
+  $("msg").textContent = text;
+  $("msg").className = isError ? "error" : "";
+  $("overlay").hidden = !!hideOverlay;
+}
+
+// The threaded build needs cross-origin isolation. Install the helper worker
+// and reload once if the server does not already send the headers.
+async function ensureIsolation() {
+  if (window.crossOriginIsolated) return true;
+  if (!("serviceWorker" in navigator) || !window.isSecureContext) {
+    show("This page must be served over HTTPS (or localhost) with cross-origin isolation enabled. See README.md.", true);
+    return false;
+  }
+  if (sessionStorage.getItem("coiReloaded")) {
+    show("Cross-origin isolation could not be enabled. See README.md for server headers.", true);
+    return false;
+  }
+  const reg = await navigator.serviceWorker.register("coi-sw.js");
+  await navigator.serviceWorker.ready;
+  sessionStorage.setItem("coiReloaded", "1");
+  location.reload();
+  return false;
+}
+
+// The game streams assets from <this host>/LEGO/ (absolute path, so the
+// package must live at the web root). Verify a key file is present.
+async function checkAssets() {
+  try {
+    const r = await fetch("/LEGO/Scripts/Isle/ISLE.SI", { method: "HEAD" });
+    return r.ok;
+  } catch { return false; }
+}
+
+function startGame() {
+  const canvas = $("canvas");
+  canvas.addEventListener("webglcontextlost", (e) => {
+    e.preventDefault();
+    show("WebGL context lost. Reload the page.", true);
+  });
+
+  let total = 0;
+  window.Module = {
+    canvas,
+    print: (...a) => console.log(...a),
+    printErr: (...a) => console.warn(...a),
+    setStatus(text) {
+      const m = /([^(]+)\((\d+(\.\d+)?)\/(\d+)\)/.exec(text);
+      if (m) {
+        $("progress").hidden = false;
+        $("progress").value = parseFloat(m[2]);
+        $("progress").max = parseInt(m[4], 10);
+        text = m[1];
+      } else {
+        $("progress").hidden = true;
+      }
+      if (text) show(text, false);
+      else $("overlay").hidden = true;
+    },
+    monitorRunDependencies(left) {
+      total = Math.max(total, left);
+      this.setStatus(left ? `Preparing… (${total - left}/${total})` : "");
+    },
+  };
+  window.addEventListener("error", () => show("Error starting game. See the browser console.", true));
+
+  const s = document.createElement("script");
+  s.src = "isle.js";
+  document.body.appendChild(s);
+}
+
+$("fullscreen").addEventListener("click", () => {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else $("stage").requestFullscreen?.();
+});
+$("canvas").addEventListener("click", () => {
+  $("canvas").focus();
+  if (prefs.pointerLock) $("canvas").requestPointerLock?.();
+});
+
+(async () => {
+  if (!(await ensureIsolation())) return;
+  if (!(await checkAssets())) {
+    show("Game files not found. Copy your own LEGO Island files into the LEGO/ folder next to this page (see README.md).", true);
+    return;
+  }
+  show("Downloading…");
+  startGame();
+})();
+</script>
+</body>
+</html>
